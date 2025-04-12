@@ -1,0 +1,399 @@
+# NLP-Based CV Screening Automation for Finance Controlling Intern Position
+# This script analyzes CVs in PDF/DOCX format and matches them against job requirements
+
+# Install required packages if not already installed
+required_packages <- c("tidyverse", "stringr", "tidytext", "pdftools", 
+                       "readxl", "docxtractr", "openxlsx", "tm", 
+                       "SnowballC", "topicmodels", "textcat", "quanteda")
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) {
+  message("Installing missing packages: ", paste(new_packages, collapse = ", "))
+  install.packages(new_packages)
+}
+
+# Load required libraries - explicit loading to avoid errors
+library(tidyverse)       # For data manipulation
+library(dplyr)           # Explicit load for arrange function
+library(stringr)         # For string manipulation
+library(tidytext)        # For text mining
+library(pdftools)        # For reading PDF files
+library(readxl)          # For reading Excel files
+library(docxtractr)      # For reading Word documents
+library(openxlsx)        # For writing Excel files
+library(tm)              # For text mining functions
+library(SnowballC)       # For stemming
+library(topicmodels)     # For LDA topic modeling
+library(textcat)         # For language detection
+library(quanteda)        # For additional text analysis
+
+# Set working directory (update this path as needed)
+cv_folder <- "your own path"
+
+# Function to extract text from PDF files
+extract_from_pdf <- function(file_path) {
+  tryCatch({
+    if(!requireNamespace("pdftools", quietly = TRUE)) {
+      stop("Package 'pdftools' is required but not installed")
+    }
+    text <- pdftools::pdf_text(file_path)
+    return(paste(text, collapse = " "))
+  }, error = function(e) {
+    warning(paste("Error processing PDF:", file_path, "-", e$message))
+    return(NA)
+  })
+}
+
+# Function to extract text from DOCX files
+extract_from_docx <- function(file_path) {
+  tryCatch({
+    if(!requireNamespace("docxtractr", quietly = TRUE)) {
+      stop("Package 'docxtractr' is required but not installed")
+    }
+    doc <- docxtractr::read_docx(file_path)
+    # First try to extract tables
+    text <- docxtractr::docx_extract_all_tbls(doc, include_tbl_nums = FALSE)
+    if (length(text) == 0) {
+      # If no tables found, extract paragraphs
+      paragraphs <- docxtractr::docx_extract_all(doc)
+      text <- paste(paragraphs, collapse = " ")
+    } else {
+      # Convert table content to text
+      text <- paste(sapply(text, function(t) paste(unlist(t), collapse = " ")), collapse = " ")
+    }
+    return(text)
+  }, error = function(e) {
+    warning(paste("Error processing DOCX:", file_path, "-", e$message))
+    return(NA)
+  })
+}
+
+# Function to clean text
+clean_text <- function(text) {
+  text <- tolower(text)
+  text <- stringr::str_replace_all(text, "[[:punct:]]", " ")
+  text <- stringr::str_replace_all(text, "\\s+", " ")
+  text <- trimws(text)
+  return(text)
+}
+
+# Function to determine document language
+detect_language <- function(text) {
+  tryCatch({
+    lang <- textcat::textcat(text)
+    return(lang)
+  }, error = function(e) {
+    warning("Could not detect language reliably")
+    return(NA)
+  })
+}
+
+# Function to check for English proficiency mentions
+check_english_proficiency <- function(text) {
+  proficiency_patterns <- c(
+    "english.*fluent", "fluent.*english",
+    "english.*proficient", "proficient.*english",
+    "english.*native", "native.*english",
+    "english.*c1", "english.*c2", "english.*b2",
+    "ielts", "toefl", "cambridge.*english"
+  )
+  
+  matches <- sapply(proficiency_patterns, function(pattern) {
+    stringr::str_detect(text, stringr::regex(pattern, ignore_case = TRUE))
+  })
+  
+  english_mentioned <- sum(matches) > 0
+  return(english_mentioned)
+}
+
+# Function to check for Master's degree
+check_masters_degree <- function(text) {
+  master_patterns <- c(
+    "master", "msc", "m\\.sc", "m\\.s\\.", "master of", "postgraduate", "graduate degree"
+  )
+  
+  matches <- sapply(master_patterns, function(pattern) {
+    stringr::str_detect(text, stringr::regex(pattern, ignore_case = TRUE))
+  })
+  
+  masters_mentioned <- sum(matches) > 0
+  return(masters_mentioned)
+}
+
+# Function to check for PowerBI experience
+check_powerbi_experience <- function(text) {
+  powerbi_patterns <- c(
+    "power bi", "powerbi", "power-bi",
+    "microsoft bi", "business intelligence.*power",
+    "bi tool.*power", "power.*dashboard"
+  )
+  
+  matches <- sapply(powerbi_patterns, function(pattern) {
+    stringr::str_detect(text, stringr::regex(pattern, ignore_case = TRUE))
+  })
+  
+  powerbi_mentioned <- sum(matches) > 0
+  return(powerbi_mentioned)
+}
+
+# Function to check for previous experience
+check_previous_experience <- function(text) {
+  experience_patterns <- c(
+    "experience", "internship", "trainee", "job", "worked", "employed",
+    "position at", "role at", "finance.*position", "controlling.*position",
+    "finance.*role", "controlling.*role", "junior", "assistant", "analyst"
+  )
+  
+  matches <- sapply(experience_patterns, function(pattern) {
+    stringr::str_detect(text, stringr::regex(pattern, ignore_case = TRUE))
+  })
+  
+  experience_mentioned <- sum(matches) > 0
+  return(experience_mentioned)
+}
+
+# Define job requirements as keyword groups
+job_keywords <- list(
+  finance_skills = c(
+    "financial data", "finance", "controlling", "financial analysis", 
+    "financial reporting", "accounting", "budgeting", "forecasting", 
+    "financial planning", "audit", "variance analysis", "reconciliation"
+  ),
+  
+  data_skills = c(
+    "dashboard", "data analysis", "performance indicators", "kpi", 
+    "metrics", "data visualization", "business intelligence", "reporting",
+    "excel", "spreadsheet", "pivot tables", "vlookup", "charts", "graphs"
+  ),
+  
+  technical_skills = c(
+    "powerbi", "power bi", "power-bi", "bi", "sql", "tableau", "automation", 
+    "vba", "macros", "python", "r", "sap", "erp", "database", "data modeling"
+  ),
+  
+  soft_skills = c(
+    "detail-oriented", "attention to detail", "communication", "organized", 
+    "analytical", "problem-solving", "team player", "collaboration", 
+    "presentation", "stakeholder management", "time management"
+  ),
+  
+  finance_terms = c(
+    "profit", "cash flow", "fcf", "rop", "operating profit", "p&l", 
+    "balance sheet", "income statement", "financial statements", "forecast", 
+    "rolling forecast", "rf", "actual vs budget", "variance", "financial performance"
+  )
+)
+
+# Calculate the score for each keyword group
+calculate_keyword_score <- function(text, keyword_group, group_name) {
+  matches <- sapply(keyword_group, function(keyword) {
+    if (stringr::str_detect(text, stringr::regex(keyword, ignore_case = TRUE))) {
+      return(1)
+    } else {
+      return(0)
+    }
+  })
+  
+  # Calculate percentage of keywords matched
+  score <- sum(matches) / length(keyword_group) * 100
+  
+  # Return details of matched keywords as well
+  matched_keywords <- keyword_group[which(matches == 1)]
+  
+  return(list(
+    score = score,
+    matched_keywords = matched_keywords
+  ))
+}
+
+# Main function to process all CVs
+process_cvs <- function(folder_path) {
+  # Get all PDF and DOCX files in the folder
+  files <- list.files(
+    path = folder_path, 
+    pattern = "\\.(pdf|docx)$", 
+    full.names = TRUE,
+    recursive = TRUE,
+    ignore.case = TRUE
+  )
+  
+  # Check if any files were found
+  if (length(files) == 0) {
+    stop("No PDF or DOCX files found in the specified folder.")
+  }
+  
+  # Initialize results dataframe
+  results <- data.frame(
+    filename = basename(files),
+    fullpath = files,
+    text_extracted = rep(NA, length(files)),
+    language = rep(NA, length(files)),
+    masters_degree = rep(NA, length(files)),
+    powerbi_experience = rep(NA, length(files)),
+    previous_experience = rep(NA, length(files)),
+    english_proficiency = rep(NA, length(files)),
+    finance_skills_score = rep(NA, length(files)),
+    data_skills_score = rep(NA, length(files)),
+    technical_skills_score = rep(NA, length(files)),
+    soft_skills_score = rep(NA, length(files)),
+    finance_terms_score = rep(NA, length(files)),
+    total_score = rep(NA, length(files)),
+    mandatory_reqs_met = rep(NA, length(files)),
+    matched_keywords = rep(NA, length(files)),
+    stringsAsFactors = FALSE
+  )
+  
+  # Process each file
+  for (i in seq_along(files)) {
+    file_path <- files[i]
+    file_ext <- tolower(tools::file_ext(file_path))
+    
+    # Extract text based on file type
+    if (file_ext == "pdf") {
+      text <- extract_from_pdf(file_path)
+    } else if (file_ext == "docx") {
+      text <- extract_from_docx(file_path)
+    } else {
+      text <- NA
+      warning(paste("Unsupported file format:", file_path))
+    }
+    
+    # Skip if text extraction failed
+    if (is.na(text)) {
+      results$text_extracted[i] <- FALSE
+      next
+    }
+    
+    results$text_extracted[i] <- TRUE
+    
+    # Clean the extracted text
+    clean_text_content <- clean_text(text)
+    
+    # Detect language
+    results$language[i] <- detect_language(clean_text_content)
+    
+    # Check for mandatory requirements
+    results$masters_degree[i] <- check_masters_degree(clean_text_content)
+    results$powerbi_experience[i] <- check_powerbi_experience(clean_text_content)
+    results$previous_experience[i] <- check_previous_experience(clean_text_content)
+    results$english_proficiency[i] <- check_english_proficiency(clean_text_content)
+    
+    # Calculate scores for each keyword group
+    finance_result <- calculate_keyword_score(clean_text_content, job_keywords$finance_skills, "finance_skills")
+    data_result <- calculate_keyword_score(clean_text_content, job_keywords$data_skills, "data_skills")
+    technical_result <- calculate_keyword_score(clean_text_content, job_keywords$technical_skills, "technical_skills")
+    soft_result <- calculate_keyword_score(clean_text_content, job_keywords$soft_skills, "soft_skills")
+    terms_result <- calculate_keyword_score(clean_text_content, job_keywords$finance_terms, "finance_terms")
+    
+    # Store scores
+    results$finance_skills_score[i] <- finance_result$score
+    results$data_skills_score[i] <- data_result$score
+    results$technical_skills_score[i] <- technical_result$score
+    results$soft_skills_score[i] <- soft_result$score
+    results$finance_terms_score[i] <- terms_result$score
+    
+    # Calculate total score with weighted emphasis on critical skills, adjust weights based on manager preference
+    results$total_score[i] <- (
+      finance_result$score * 0.25 +
+        data_result$score * 0.2 +
+        technical_result$score * 0.25 +
+        soft_result$score * 0.15 +
+        terms_result$score * 0.15
+    )
+    
+    # Check if all mandatory requirements are met
+    results$mandatory_reqs_met[i] <- sum(c(
+      results$masters_degree[i],
+      results$powerbi_experience[i],
+      results$previous_experience[i],
+      results$english_proficiency[i]
+    )) == 4
+    
+    # Consolidate matched keywords
+    all_matched <- c(
+      finance_result$matched_keywords,
+      data_result$matched_keywords,
+      technical_result$matched_keywords,
+      soft_result$matched_keywords,
+      terms_result$matched_keywords
+    )
+    
+    results$matched_keywords[i] <- paste(all_matched, collapse = ", ")
+  }
+  
+  # Generate final candidate ranking
+  ranked_candidates <- results %>%
+    dplyr::mutate(
+      meets_mandatory = mandatory_reqs_met,
+      ranking_score = ifelse(meets_mandatory, total_score, total_score * 0.5)
+    ) %>%
+    dplyr::arrange(dplyr::desc(meets_mandatory), dplyr::desc(ranking_score))
+  
+  # Generate candidate summaries
+  candidate_summaries <- ranked_candidates %>%
+    dplyr::mutate(
+      summary = paste(
+        "Candidate:", filename, "\n",
+        "Meets all mandatory requirements:", ifelse(mandatory_reqs_met, "Yes", "No"), "\n",
+        "Total score:", round(total_score, 1), "out of 100\n",
+        "Key qualifications: Masters degree:", ifelse(masters_degree, "Yes", "No"),
+        "| PowerBI:", ifelse(powerbi_experience, "Yes", "No"),
+        "| Previous experience:", ifelse(previous_experience, "Yes", "No"),
+        "| English proficiency:", ifelse(english_proficiency, "Yes", "No"), "\n",
+        "Skill scores: Finance:", round(finance_skills_score, 1),
+        "| Data:", round(data_skills_score, 1),
+        "| Technical:", round(technical_skills_score, 1),
+        "| Soft skills:", round(soft_skills_score, 1),
+        "| Finance terms:", round(finance_terms_score, 1), "\n",
+        "Matched keywords:", matched_keywords
+      )
+    )
+  
+  # Create output Excel file
+  output_file <- file.path(folder_path, "CV_Screening_Results.xlsx")
+  
+  wb <- createWorkbook()
+  
+  # Add detailed results sheet
+  addWorksheet(wb, "Detailed Results")
+  writeData(wb, "Detailed Results", ranked_candidates)
+  
+  # Add candidate summaries sheet
+  addWorksheet(wb, "Candidate Summaries")
+  writeData(wb, "Candidate Summaries", candidate_summaries %>% dplyr::select(filename, summary))
+  
+  # Add top candidates sheet
+  addWorksheet(wb, "Top Candidates")
+  writeData(wb, "Top Candidates", ranked_candidates %>% 
+              dplyr::filter(mandatory_reqs_met == TRUE) %>% 
+              dplyr::arrange(dplyr::desc(ranking_score)) %>%
+              dplyr::slice_head(n = 10))
+  
+  # Save workbook
+  saveWorkbook(wb, output_file, overwrite = TRUE)
+  
+  # Print completion message
+  cat("\nCV screening completed successfully!\n")
+  cat("Results saved to:", output_file, "\n")
+  cat("Top 3 candidates:\n")
+  
+  # Print top 3 candidates
+  top3 <- candidate_summaries %>% 
+    dplyr::filter(mandatory_reqs_met == TRUE) %>% 
+    dplyr::arrange(dplyr::desc(total_score)) %>%
+    dplyr::slice_head(n = 3)
+  
+  for (i in 1:nrow(top3)) {
+    cat("\n", i, ". ", top3$filename[i], " - Score: ", round(top3$total_score[i], 1), "\n", sep = "")
+  }
+  
+  # Return the final results
+  return(list(
+    ranked_candidates = ranked_candidates,
+    candidate_summaries = candidate_summaries,
+    output_file = output_file
+  ))
+}
+
+# Run the script - uncomment this to execute immediately
+results <- process_cvs(cv_folder)
