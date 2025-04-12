@@ -23,4 +23,4 @@ There are also some compulsory requirements:
 
 2) The code contains functions for both word and pdf files, it was however run and tested using CVs in pdf format only, as we are gradually pushing for CVs to be submitted in PDF format only.
 3) For keyword functions, you can use any generative AI to come up with them even faster, if time constraints are your thing.
-4) Time-wise, using this makes sense if you receive a big amount (>50) of CVs.
+4) Time-wise, using this makes sense if you receive a good amount (>30) of CVs that your existing ATS deemed as suitable already. 
